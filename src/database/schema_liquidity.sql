@@ -64,3 +64,24 @@ CREATE TABLE IF NOT EXISTS fact_cva_pfe_results (
 -- Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_cf_maturity ON fact_cash_flows(maturity_bucket);
 CREATE INDEX IF NOT EXISTS idx_deriv_cp ON fact_derivative_portfolios(counterparty_id);
+
+
+
+
+-- ------------------------------------------------------
+
+
+
+-- Table for Storing EVT Tail Liquidity Risk Results
+CREATE TABLE IF NOT EXISTS evt_liquidity_tail_risk (
+    evt_id SERIAL PRIMARY KEY,
+    calc_date DATE NOT NULL,
+    threshold_u NUMERIC(15, 2) NOT NULL,
+    gpd_shape_xi NUMERIC(8, 6) NOT NULL,
+    gpd_scale_beta NUMERIC(12, 2) NOT NULL,
+    evt_var_999_eur NUMERIC(15, 2) NOT NULL,
+    evt_es_999_eur NUMERIC(15, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_evt_date UNIQUE (calc_date)
+);
+
