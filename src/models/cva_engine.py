@@ -29,7 +29,7 @@ class CreditValuationAdjustmentEngine:
         self.horizons = time_horizons
 
     def fetch_counterparty_profiles(self):
-        """Queries Expected Exposure profiles and counterparty hazard rates from DB."""
+        """Queries Expected Exposure profiles for LATEST calculation date."""
         query = """
             SELECT 
                 p.cva_id,
@@ -40,9 +40,11 @@ class CreditValuationAdjustmentEngine:
                 c.hazard_rate_annual,
                 c.recovery_rate,
                 p.expected_exposure_eur,
-                p.pfe_95_eur
+                p.pfe_95_eur,
+                p.calc_date
             FROM fact_cva_pfe_results p
-            JOIN dim_counterparties c ON p.counterparty_id = c.counterparty_id;
+            JOIN dim_counterparties c ON p.counterparty_id = c.counterparty_id
+            WHERE p.calc_date = (SELECT MAX(calc_date) FROM fact_cva_pfe_results);
         """
         with self.engine.connect() as conn:
             df = pd.read_sql(query, conn)
@@ -52,7 +54,7 @@ class CreditValuationAdjustmentEngine:
     def calculate_cva_charges(self):
         """Computes CVA monetary charges (EUR) per counterparty."""
         df_cp = self.fetch_counterparty_profiles()
-        results = []  # List initialized here
+        results = []
         latest_date = datetime.now().strftime('%Y-%m-%d')
 
         print(f"\n💶 Executing CVA Pricing Engine (EUR Risk-Free Rate: {self.risk_free_rate*100:.1f}%)...")
@@ -92,8 +94,6 @@ class CreditValuationAdjustmentEngine:
             results.append({
                 "counterparty_id": int(cp_id),
                 "calc_date": latest_date,
-                "expected_exposure_eur": avg_ee,
-                "pfe_95_eur": pfe_95,
                 "cva_charge_eur": cva_charge_eur
             })
 
@@ -103,27 +103,25 @@ class CreditValuationAdjustmentEngine:
         self._save_to_postgresql(results)
 
     def _save_to_postgresql(self, results):
-        """Updates CVA charges in fact_cva_pfe_results table."""
+        """Updates CVA charges directly in fact_cva_pfe_results table."""
         if not results:
             return
 
-        df_cva = pd.DataFrame(results)
-        df_cva['calc_date'] = pd.to_datetime(df_cva['calc_date']).dt.date
-
-        print(f"\n📥 Uploading CVA pricing charges to PostgreSQL...")
+        print(f"\n📥 Updating CVA pricing charges in PostgreSQL...")
         
         with self.engine.begin() as conn:
-            df_cva.to_sql("temp_cva", conn, if_exists="replace", index=False)
-            upsert_query = text("""
-                INSERT INTO fact_cva_pfe_results (counterparty_id, calc_date, expected_exposure_eur, pfe_95_eur, cva_charge_eur)
-                SELECT counterparty_id, calc_date::DATE, expected_exposure_eur, pfe_95_eur, cva_charge_eur
-                FROM temp_cva
-                ON CONFLICT (counterparty_id, calc_date) DO UPDATE
-                SET cva_charge_eur = EXCLUDED.cva_charge_eur;
-
-                DROP TABLE temp_cva;
-            """)
-            conn.execute(upsert_query)
+            for res in results:
+                # FIXED: Uses CAST(:cdate AS DATE) instead of :cdate::DATE
+                update_query = text("""
+                    UPDATE fact_cva_pfe_results
+                    SET cva_charge_eur = :cva
+                    WHERE counterparty_id = :cp_id AND calc_date = CAST(:cdate AS DATE);
+                """)
+                conn.execute(update_query, {
+                    "cva": float(res["cva_charge_eur"]),
+                    "cp_id": int(res["counterparty_id"]),
+                    "cdate": str(res["calc_date"])
+                })
 
         print("🎉 CVA Pricing charges committed to PostgreSQL successfully!")
 
